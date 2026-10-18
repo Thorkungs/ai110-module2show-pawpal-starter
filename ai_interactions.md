@@ -1,6 +1,6 @@
 # AI Interactions Log
 
-> **Stretch features only.** Only fill in the sections that apply to stretch features you attempted. If you did not attempt a stretch feature, leave its section blank or delete it. This file is not required for the core project.
+> Stretch features only. The Prompt Comparison (SF11) section was not attempted and has been removed.
 
 ---
 
@@ -10,31 +10,28 @@
 
 **What task did you give the agent?**
 
-<!-- Describe the goal you asked the agent to accomplish -->
+I gave Claude (running as an agent with file editing, a terminal, and a browser) the link to the PawPal+ project page and asked it to do the project. It read the full assignment and the Project 2 grading rubric in the browser, cloned the starter repo, and worked through all six phases plus the stretch features. For the advanced algorithm, the specific goal was a **"next available slot" finder** and a **priority based daily plan that respects the owner's time budget and moves lower priority tasks out of overlapping slots** (time blocking).
 
 **What did the agent do?**
 
-<!-- List the steps the agent took (files edited, commands run, etc.) -->
+Files created or modified:
+
+| File | What changed |
+|------|--------------|
+| `pawpal_system.py` | Skeleton from UML, then the full Task / Pet / Owner / Scheduler implementation; sorting, filtering, recurrence, and conflict detection; then the stretch layer: `first_free_slot()`, `Scheduler.find_next_available_slot()`, `Scheduler.sort_by_priority()`, `Scheduler.build_daily_plan()` with the new `DailyPlan` and `PlanEntry` classes, JSON `to_dict` / `from_dict` / `save_to_json` / `load_from_json`, and the `task_emoji()` / `PRIORITY_BADGES` formatting helpers. |
+| `main.py` | CLI demo: two pets, eight tasks added out of order with one double booking; prints every feature with `tabulate` tables. |
+| `app.py` | Streamlit UI: `st.session_state` for the Owner, four tabs, conflict warnings with a suggested slot, mark complete with recurrence, the daily plan, a free slot finder, auto save to `data.json`. |
+| `tests/test_pawpal.py`, `pytest.ini` | 39 tests; config so tests import from the project root. |
+| `diagrams/uml_draft.mmd`, `uml_final.mmd`, `uml.mmd` | Draft and final Mermaid UML. |
+| `README.md`, `reflection.md`, `requirements.txt`, `.gitignore` | Docs, reflection, `tabulate` / `wcwidth` dependencies, `data.json` ignored. |
+
+Commands it ran: created a virtual environment and installed requirements, ran `python main.py` and `python -m pytest` after each phase, ran a mutation check (six injected bugs, all caught), drove the UI with Streamlit's `AppTest` harness, booted `streamlit run app.py` headless to confirm the server starts, and cross-checked the final UML against the code with a script. It committed after every phase.
 
 **What did you have to verify or fix manually?**
 
-<!-- Describe anything the agent got wrong or that required human review -->
+Things that were caught in review and corrected before they were committed:
 
----
-
-## Prompt Comparison (SF11)
-
-> Compare two different prompts (or two different models) on the same task.
-
-| | Option A | Option B |
-|-|----------|----------|
-| **Model / tool used** | | |
-| **Prompt** | | |
-| **Response summary** | | |
-| **What was useful** | | |
-| **Problems noticed** | | |
-| **Decision** | | |
-
-**Which approach did you use in your final implementation and why?**
-
-<!-- Your conclusion -->
+- **Planner design**: the first plan design returned modified Tasks; it was changed so planning returns `PlanEntry` objects and never edits a task's requested time (otherwise the moved time would also carry into the task's next recurrence).
+- **A test that couldn't fail**: an early version of the time blocking test asserted on the tasks' requested windows instead of the planned windows. It was rewritten to check the real guarantee: planned windows are in order and never overlap.
+- **Streamlit deprecation**: the `AppTest` run flagged `use_container_width` as deprecated in the current Streamlit; it was removed.
+- **Awkward suggestion times**: the free slot finder suggested "13:53" when searching from the current time; the app now rounds "now" up to the next 5 minutes.

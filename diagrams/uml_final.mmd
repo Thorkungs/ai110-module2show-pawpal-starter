@@ -1,0 +1,93 @@
+classDiagram
+    %% PawPal+ FINAL UML: matches pawpal_system.py as submitted.
+    %% Changes from uml_draft.mmd: Task gained due_date, pet_name, task_id, start/end,
+    %% overlaps(), next_occurrence(); Owner gained a day window and JSON save/load;
+    %% Scheduler gained priority sorting, slot finding, and build_daily_plan(), which
+    %% returns DailyPlan/PlanEntry objects instead of mutating Tasks.
+
+    class Owner {
+        +str name
+        +int available_minutes
+        +str day_start
+        +str day_end
+        +list~Pet~ pets
+        +add_pet(pet: Pet) Pet
+        +get_pet(name: str) Pet
+        +get_all_tasks() list~Task~
+        +to_dict() dict
+        +from_dict(data: dict) Owner$
+        +save_to_json(path) Path
+        +load_from_json(path) Owner$
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +list~Task~ tasks
+        +add_task(task: Task) Task
+        +remove_task(task_id: str) bool
+        +get_task(task_id: str) Task
+        +list_tasks(include_completed: bool) list~Task~
+        +task_count() int
+        +to_dict() dict
+        +from_dict(data: dict) Pet$
+    }
+
+    class Task {
+        +str description
+        +str time
+        +int duration_minutes
+        +str priority
+        +str frequency
+        +date due_date
+        +bool completed
+        +str pet_name
+        +str task_id
+        +datetime start
+        +datetime end
+        +overlaps(other: Task) bool
+        +mark_complete() None
+        +next_occurrence() Task
+        +to_dict() dict
+        +from_dict(data: dict) Task$
+    }
+
+    class Scheduler {
+        +Owner owner
+        +get_all_tasks() list~Task~
+        +tasks_for_date(day) list~Task~
+        +sort_by_time(tasks) list~Task~
+        +sort_by_priority(tasks) list~Task~
+        +filter_tasks(pet_name, completed, day, tasks) list~Task~
+        +mark_task_complete(task_id: str) Task
+        +find_conflicts(day) list~tuple~
+        +detect_conflicts(day) list~str~
+        +find_next_available_slot(duration_minutes, day, earliest) str
+        +build_daily_plan(day) DailyPlan
+    }
+
+    class DailyPlan {
+        +date day
+        +int budget_minutes
+        +list~PlanEntry~ entries
+        +list~tuple~ skipped
+        +int used_minutes
+        +explain() str
+    }
+
+    class PlanEntry {
+        +Task task
+        +datetime start
+        +datetime end
+        +str reason
+        +bool moved
+    }
+
+    Owner "1" o-- "*" Pet : owns
+    Pet "1" *-- "*" Task : has
+    Scheduler --> Owner : reads tasks via get_all_tasks()
+    Scheduler ..> Task : sorts, filters, completes
+    Scheduler ..> DailyPlan : builds
+    DailyPlan "1" *-- "*" PlanEntry : entries
+    PlanEntry --> Task : places
