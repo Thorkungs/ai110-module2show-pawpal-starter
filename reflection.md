@@ -4,8 +4,20 @@
 
 **a. Initial design**
 
-- Briefly describe your initial UML design.
-- What classes did you include, and what responsibilities did you assign to each?
+Three core actions a user should be able to perform:
+
+1. **Add a pet** (name and species) so PawPal+ knows who it is planning for.
+2. **Schedule a care task** for a specific pet, with a time, duration, priority, and how often it repeats (once, daily, weekly).
+3. **See today's plan**: every pet's tasks in time order, with warnings when two things are booked at once and an explanation of what fits in the owner's available time.
+
+My initial UML (`diagrams/uml_draft.mmd`) had four classes:
+
+- **Task**: one care activity. Holds the description, a `"HH:MM"` time, duration, priority, frequency, and a completed flag. Its only behavior is `mark_complete()`.
+- **Pet**: identifying info (name, species) plus a list of Tasks. Responsible for adding, removing, and listing its own tasks.
+- **Owner**: the person using the app. Holds a list of Pets and a daily time budget (`available_minutes`). Responsible for managing pets and for `get_all_tasks()`, which flattens every pet's tasks into one list.
+- **Scheduler**: the "brain." It takes an Owner and reads tasks only through `Owner.get_all_tasks()`, so every algorithm (sorting, filtering, conflict detection, planning) automatically works across all pets instead of just one.
+
+Relationships: an Owner *owns* many Pets (aggregation), a Pet *has* many Tasks (composition, since a task doesn't make sense without its pet), and the Scheduler *reads from* the Owner. I used Python dataclasses for Task, Pet, and Owner because they are mostly data, and kept Scheduler as a regular class because it is all behavior.
 
 **b. Design changes**
 

@@ -1,0 +1,44 @@
+classDiagram
+    %% PawPal+ UML DRAFT (Phase 1)
+    %% Four core classes brainstormed before writing any code.
+    %% See uml_final.mmd / uml.mmd for the version that matches the final implementation.
+
+    class Owner {
+        +str name
+        +int available_minutes
+        +list~Pet~ pets
+        +add_pet(pet: Pet) None
+        +get_pet(name: str) Pet
+        +get_all_tasks() list~Task~
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +list~Task~ tasks
+        +add_task(task: Task) None
+        +remove_task(description: str) None
+        +list_tasks() list~Task~
+    }
+
+    class Task {
+        +str description
+        +str time
+        +int duration_minutes
+        +str priority
+        +str frequency
+        +bool completed
+        +mark_complete() None
+    }
+
+    class Scheduler {
+        +Owner owner
+        +sort_by_time() list~Task~
+        +filter_tasks(pet_name, completed) list~Task~
+        +detect_conflicts() list~str~
+        +generate_plan() list~Task~
+    }
+
+    Owner "1" o-- "*" Pet : owns
+    Pet "1" *-- "*" Task : has
+    Scheduler --> Owner : reads tasks from
