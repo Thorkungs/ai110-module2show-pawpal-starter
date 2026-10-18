@@ -85,14 +85,14 @@ Sample test output:
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
+Every algorithm lives on `Scheduler` and reads tasks through `Owner.get_all_tasks()`, so it works across all pets at once.
 
 | Feature | Method(s) | Notes |
 |---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Task sorting | `Scheduler.sort_by_time()` | `sorted()` with a `lambda t: (t.due_date, t.time)` key. Times are normalized to zero padded `"HH:MM"` in `Task.__post_init__`, so string order equals clock order (`"9:00"` becomes `"09:00"` and sorts before `"10:00"`). |
+| Filtering | `Scheduler.filter_tasks(pet_name=, completed=, day=)` | Any combination of pet, completion status, and date. `None` means "don't filter on this." `Scheduler.tasks_for_date()` is a shortcut for one day. |
+| Conflict handling | `Task.overlaps()`, `Scheduler.find_conflicts()`, `Scheduler.detect_conflicts()` | Checks pending tasks on a day for **overlapping durations**, not just identical start times, across the same pet or different pets. Returns warning strings rather than raising, so the app never crashes on a double booking. |
+| Recurring tasks | `Task.next_occurrence()`, `Scheduler.mark_task_complete()` | Completing a `daily` or `weekly` task adds the next instance at `due_date + timedelta(days=1)` or `timedelta(weeks=1)`. Completing the same task twice does not create a duplicate. |
 
 ## 📸 Demo Walkthrough
 

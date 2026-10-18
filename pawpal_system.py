@@ -10,12 +10,14 @@ Scheduler  the "brain" that reads every pet's tasks through the Owner
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
+from itertools import combinations
 from uuid import uuid4
 
 VALID_PRIORITIES = ("low", "medium", "high")
 VALID_FREQUENCIES = ("once", "daily", "weekly")
+RECURRENCE_STEP = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
 
 
 def normalize_time(value: str | time) -> str:
@@ -71,13 +73,25 @@ class Task:
         """Return when the task finishes, based on its duration."""
         return self.start + timedelta(minutes=self.duration_minutes)
 
+    def overlaps(self, other: Task) -> bool:
+        """Return True if this task's time window overlaps another task's window."""
+        return self.start < other.end and other.start < self.end
+
     def mark_complete(self) -> None:
         """Mark this task as done."""
         self.completed = True
 
     def next_occurrence(self) -> Task | None:
         """Return the next instance of a recurring task, or None for one time tasks."""
-        raise NotImplementedError  # Phase 4
+        step = RECURRENCE_STEP.get(self.frequency)
+        if step is None:
+            return None
+        return replace(
+            self,
+            due_date=self.due_date + step,
+            completed=False,
+            task_id=uuid4().hex[:8],
+        )
 
 
 @dataclass
@@ -160,18 +174,72 @@ class Scheduler:
         day = day or date.today()
         return [t for t in self.get_all_tasks() if t.due_date == day]
 
-    def sort_by_time(self, tasks: list[Task] | None = None) -> list[Task]:
-        """Return tasks in chronological order."""
-        raise NotImplementedError  # Phase 4
+    # ---- Sorting and filtering -------------------------------------------------
 
-    def filter_tasks(self, pet_name: str | None = None, completed: bool | None = None) -> list[Task]:
-        """Return tasks matching a pet name and/or completion status."""
-        raise NotImplementedError  # Phase 4
+    def sort_by_time(self, tasks: list[Task] | None = None) -> list[Task]:
+        """Return tasks in chronological order (by date, then 'HH:MM' time)."""
+        tasks = self.get_all_tasks() if tasks is None else tasks
+        # Times are normalized to zero padded "HH:MM", so plain string order is clock order.
+        return sorted(tasks, key=lambda t: (t.due_date, t.time))
+
+    def filter_tasks(
+        self,
+        pet_name: str | None = None,
+        completed: bool | None = None,
+        day: date | None = None,
+        tasks: list[Task] | None = None,
+    ) -> list[Task]:
+        """Return tasks matching every filter given (pet, completion status, date); None means 'any'."""
+        tasks = self.get_all_tasks() if tasks is None else tasks
+        return [
+            t
+            for t in tasks
+            if (pet_name is None or t.pet_name.lower() == pet_name.lower())
+            and (completed is None or t.completed == completed)
+            and (day is None or t.due_date == day)
+        ]
+
+    # ---- Recurring tasks ---------------------------------------------------------
+
+    def _find_task(self, task_id: str) -> tuple[Pet, Task]:
+        """Locate a task (and the pet that owns it) anywhere in the owner's pets."""
+        for pet in self.owner.pets:
+            task = pet.get_task(task_id)
+            if task is not None:
+                return pet, task
+        raise KeyError(f"No task with id {task_id!r}")
 
     def mark_task_complete(self, task_id: str) -> Task | None:
-        """Complete a task and schedule its next occurrence if it repeats."""
-        raise NotImplementedError  # Phase 4
+        """Complete a task; if it repeats, add and return its next occurrence."""
+        pet, task = self._find_task(task_id)
+        if task.completed:
+            return None  # completing twice must not spawn a second copy
+        task.mark_complete()
+        upcoming = task.next_occurrence()
+        if upcoming is not None:
+            pet.add_task(upcoming)
+        return upcoming
 
-    def detect_conflicts(self) -> list[str]:
-        """Return warning messages for tasks booked at the same time."""
-        raise NotImplementedError  # Phase 4
+    # ---- Conflict detection ------------------------------------------------------
+
+    def find_conflicts(self, day: date | None = None) -> list[tuple[Task, Task]]:
+        """Return every pair of pending tasks on a day whose time windows overlap."""
+        day = day or date.today()
+        pending = self.sort_by_time(self.filter_tasks(completed=False, day=day))
+        return [(a, b) for a, b in combinations(pending, 2) if a.overlaps(b)]
+
+    def detect_conflicts(self, day: date | None = None) -> list[str]:
+        """Return readable warnings for overlapping tasks instead of raising errors."""
+        warnings = []
+        for a, b in self.find_conflicts(day):
+            if a.pet_name == b.pet_name:
+                warnings.append(
+                    f"⚠️ {a.pet_name} has {a.description} ({a.time}, {a.duration_minutes} min) "
+                    f"and {b.description} ({b.time}, {b.duration_minutes} min) at the same time"
+                )
+            else:
+                warnings.append(
+                    f"⚠️ {a.pet_name}'s {a.description} ({a.time}, {a.duration_minutes} min) "
+                    f"overlaps {b.pet_name}'s {b.description} ({b.time}, {b.duration_minutes} min)"
+                )
+        return warnings

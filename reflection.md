@@ -40,8 +40,11 @@ Yes. I had the AI review the skeleton for missing relationships and logic bottle
 
 **b. Tradeoffs**
 
-- Describe one tradeoff your scheduler makes.
-- Why is that tradeoff reasonable for this scenario?
+**Conflicts are warnings, not blockers, and they are checked pair by pair.** `Scheduler.find_conflicts()` compares every pair of pending tasks on a day with `itertools.combinations` and asks `Task.overlaps()` whether their time windows intersect (so a 30 minute walk at 07:30 conflicts with a feeding at 07:45, not just with another 07:30 task). That is O(n²) comparisons. When I asked the AI how to simplify or speed up the method, it pointed out a "sweep line" version (sort by start time, then only compare each task with the ones that start before it ends, and `break` early) which is O(n log n). I kept the `combinations` version because a pet owner has maybe 10 to 30 tasks a day, so the speed difference is microseconds, while the one line comprehension is much easier to read and obviously correct. I'd switch only if PawPal+ had to scan months of tasks at once.
+
+The second half of the tradeoff is that conflicts never stop you from saving a task; `detect_conflicts()` returns friendly warning strings instead of raising. Sometimes overlap is intentional (feeding both pets at once), so the owner gets told and decides.
+
+**Recurring tasks are created one instance at a time.** When a daily task is completed, `mark_task_complete()` adds exactly one copy at `due_date + timedelta(days=1)`. I did not pre-generate a month of copies. That keeps the task list short and makes "completing twice" easy to guard against, but it means if you never check off today's walk, tomorrow's walk doesn't exist yet. For a daily care checklist that felt acceptable: the unfinished task stays visible as a reminder.
 
 ---
 
