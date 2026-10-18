@@ -21,8 +21,13 @@ Relationships: an Owner *owns* many Pets (aggregation), a Pet *has* many Tasks (
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+Yes. I had the AI review the skeleton for missing relationships and logic bottlenecks before writing any real logic, and it surfaced problems I would have hit later:
+
+- **Task had no date.** Recurring tasks need a `due_date` so "daily" can mean `due_date + timedelta(days=1)`. Without it there was nothing to add a day to. Added `due_date: date`.
+- **Tasks lost track of their pet.** Once the Scheduler flattens everything through `Owner.get_all_tasks()`, a bare Task can't say which pet it belongs to, so the schedule couldn't print "(Biscuit)" or filter by pet. Added a `pet_name` back reference that `Pet.add_task()` stamps automatically.
+- **Removing by description was ambiguous.** Two pets can both have "Breakfast," and a recurring task creates copies with the same description. Added a short `task_id` and switched `remove_task()` to use it.
+- **Time strings sort wrong if they aren't padded.** `"9:00"` sorts after `"10:00"` as a string. Added `__post_init__` validation that normalizes every time to zero padded `"HH:MM"`, which also lets sorting stay a simple `lambda` key.
+- **Recurrence ownership.** Instead of `Task.mark_complete()` reaching out to add a copy of itself to a pet, `Task.next_occurrence()` just *computes* the next instance and `Scheduler.mark_task_complete()` adds it to the right pet. That keeps Task ignorant of Pets.
 
 ---
 
