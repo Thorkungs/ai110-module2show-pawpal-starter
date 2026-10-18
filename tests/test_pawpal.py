@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from pawpal_system import Owner, Pet, Scheduler, Task
+from pawpal_system import Owner, Pet, Scheduler, Task, task_emoji
 
 DAY = date(2026, 10, 18)  # fixed date so tests don't depend on when they run
 
@@ -210,3 +210,119 @@ def test_completed_tasks_are_ignored_by_conflict_check(owner):
     clash = owner.get_pet("Mochi").add_task(Task("Litter box", "07:30", 10, due_date=DAY))
     clash.mark_complete()
     assert Scheduler(owner).detect_conflicts(DAY) == []
+
+
+# ---- Stretch: priority sorting, next available slot, daily plan ---------------------
+
+
+def test_sort_by_priority_puts_high_first_then_time():
+    """Priority beats time; ties fall back to chronological order."""
+    pet = Pet(name="Biscuit")
+    o = Owner(name="Jordan", pets=[pet])
+    pet.add_task(Task("Low early", "06:00", 10, priority="low", due_date=DAY))
+    pet.add_task(Task("High late", "20:00", 10, priority="high", due_date=DAY))
+    pet.add_task(Task("High early", "07:00", 10, priority="high", due_date=DAY))
+    pet.add_task(Task("Medium", "12:00", 10, priority="medium", due_date=DAY))
+    order = [t.description for t in Scheduler(o).sort_by_priority()]
+    assert order == ["High early", "High late", "Medium", "Low early"]
+
+
+def test_next_available_slot_finds_first_gap(owner):
+    """The finder skips busy windows: 07:30 walk ends 08:00, Mochi eats 08:30."""
+    scheduler = Scheduler(owner)
+    assert scheduler.find_next_available_slot(20, day=DAY, earliest="07:30") == "08:00"
+    # 40 minutes doesn't fit between 08:00 and 08:30, so it lands after breakfast.
+    assert scheduler.find_next_available_slot(40, day=DAY, earliest="07:30") == "09:05"
+
+
+def test_next_available_slot_starts_at_owner_day_start(owner):
+    """With no 'earliest', the search begins when the owner's day starts."""
+    assert Scheduler(owner).find_next_available_slot(15, day=DAY) == "07:00"
+
+
+def test_next_available_slot_none_when_day_is_full():
+    """Edge case: nothing fits, so the finder returns None instead of a bad time."""
+    pet = Pet(name="Biscuit")
+    o = Owner(name="Jordan", day_start="08:00", day_end="10:00", pets=[pet])
+    pet.add_task(Task("Long hike", "08:00", 110, due_date=DAY))
+    assert Scheduler(o).find_next_available_slot(15, day=DAY) is None
+    assert Scheduler(o).find_next_available_slot(10, day=DAY) == "09:50"
+
+
+def test_daily_plan_respects_budget_and_priority():
+    """Higher priority tasks claim the time budget first; the rest are skipped with a reason."""
+    pet = Pet(name="Biscuit")
+    o = Owner(name="Jordan", available_minutes=60, pets=[pet])
+    pet.add_task(Task("Grooming", "07:00", 40, priority="low", due_date=DAY))
+    pet.add_task(Task("Meds", "09:00", 5, priority="high", due_date=DAY))
+    pet.add_task(Task("Walk", "10:00", 45, priority="high", due_date=DAY))
+    plan = Scheduler(o).build_daily_plan(DAY)
+    assert [e.task.description for e in plan.entries] == ["Meds", "Walk"]  # in time order
+    assert plan.used_minutes == 50
+    assert [(t.description, "only 10 of 60" in why) for t, why in plan.skipped] == [("Grooming", True)]
+
+
+def test_daily_plan_moves_lower_priority_clash_without_mutating_task(owner):
+    """Time blocking: a clashing medium task is moved after the high one; the task itself keeps its time."""
+    litter = owner.get_pet("Mochi").add_task(Task("Litter box", "07:30", 10, priority="medium", due_date=DAY))
+    owner.available_minutes = 500
+    plan = Scheduler(owner).build_daily_plan(DAY)
+    entry = next(e for e in plan.entries if e.task is litter)
+    assert entry.moved is True
+    assert entry.start.strftime("%H:%M") == "08:00"
+    assert "Morning walk" in entry.reason
+    assert litter.time == "07:30"  # the original request is untouched
+    # Core time blocking guarantee: planned windows are in order and never overlap.
+    assert all(a.end <= b.start for a, b in zip(plan.entries, plan.entries[1:]))
+
+
+def test_daily_plan_skips_clash_when_no_slot_is_left():
+    """If a clashing task can't be moved before the day ends, it's skipped with an explanation."""
+    pet = Pet(name="Biscuit")
+    o = Owner(name="Jordan", available_minutes=500, day_end="09:00", pets=[pet])
+    pet.add_task(Task("Walk", "08:00", 60, priority="high", due_date=DAY))
+    pet.add_task(Task("Brush", "08:30", 15, priority="low", due_date=DAY))
+    plan = Scheduler(o).build_daily_plan(DAY)
+    assert [e.task.description for e in plan.entries] == ["Walk"]
+    assert "no later slot" in plan.skipped[0][1]
+
+
+def test_daily_plan_ignores_completed_tasks(owner):
+    """Completed tasks don't use up the time budget."""
+    find(owner, "Biscuit", "Vet checkup").mark_complete()
+    plan = Scheduler(owner).build_daily_plan(DAY)
+    assert "Vet checkup" not in [e.task.description for e in plan.entries]
+    assert plan.used_minutes == 45
+
+
+# ---- Stretch: JSON persistence and formatting -----------------------------------------
+
+
+def test_save_and_load_round_trip(owner, tmp_path):
+    """Everything saved to JSON comes back identical, including recurrence state."""
+    walk = find(owner, "Biscuit", "Morning walk")
+    Scheduler(owner).mark_task_complete(walk.task_id)
+    path = owner.save_to_json(tmp_path / "data.json")
+    loaded = Owner.load_from_json(path)
+    assert loaded.to_dict() == owner.to_dict()
+    restored = loaded.get_pet("Biscuit").get_task(walk.task_id)
+    assert restored.completed is True and restored.due_date == DAY and restored.pet_name == "Biscuit"
+
+
+def test_load_ignores_unknown_fields(tmp_path):
+    """Older or newer JSON with extra keys still loads."""
+    o = Owner(name="Jordan")
+    o.add_pet(Pet(name="Biscuit")).add_task(Task("Walk", "07:00", 20, due_date=DAY))
+    data = o.to_dict()
+    data["pets"][0]["tasks"][0]["mood"] = "excited"
+    loaded = Owner.from_dict(data)
+    assert loaded.get_all_tasks()[0].description == "Walk"
+
+
+@pytest.mark.parametrize(
+    "description, emoji",
+    [("Morning walk", "🦮"), ("Breakfast", "🍖"), ("Flea medication", "💊"), ("Vet checkup", "🩺"), ("Nap", "🐾")],
+)
+def test_task_emoji_matches_keywords(description, emoji):
+    """Formatting helper picks an emoji by keyword, with a paw print fallback."""
+    assert task_emoji(description) == emoji

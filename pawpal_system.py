@@ -4,20 +4,46 @@ Classes
 -------
 Task       one care activity (walk, feeding, meds, appointment)
 Pet        a pet plus the tasks that belong to it
-Owner      the person, their pets, and their daily time budget
+Owner      the person, their pets, their daily time budget, and JSON save/load
 Scheduler  the "brain" that reads every pet's tasks through the Owner
+PlanEntry  one task placed in a DailyPlan, with its planned time and the reason
+DailyPlan  the result of Scheduler.build_daily_plan(): what fits today and why
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+import json
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import date, datetime, time, timedelta
 from itertools import combinations
+from pathlib import Path
 from uuid import uuid4
 
 VALID_PRIORITIES = ("low", "medium", "high")
 VALID_FREQUENCIES = ("once", "daily", "weekly")
+PRIORITY_RANK = {"high": 3, "medium": 2, "low": 1}
 RECURRENCE_STEP = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
+DATA_VERSION = 1
+
+# ---- Presentation helpers shared by the CLI (main.py) and the Streamlit UI (app.py) ----
+
+PRIORITY_BADGES = {"high": "🔴 high", "medium": "🟡 medium", "low": "🟢 low"}
+_TASK_EMOJIS = (
+    (("vet", "checkup", "appointment", "doctor"), "🩺"),
+    (("med", "pill", "flea", "vaccine", "insulin", "dose"), "💊"),
+    (("walk", "run", "hike"), "🦮"),
+    (("breakfast", "lunch", "dinner", "feed", "food", "meal", "treat"), "🍖"),
+    (("groom", "brush", "bath", "nail", "trim"), "🧼"),
+    (("litter", "clean", "poop"), "🧹"),
+    (("play", "toy", "fetch", "train", "enrich"), "🎾"),
+    (("water",), "💧"),
+)
+
+
+def task_emoji(description: str) -> str:
+    """Pick an emoji for a task based on keywords in its description."""
+    text = description.lower()
+    return next((emoji for words, emoji in _TASK_EMOJIS if any(w in text for w in words)), "🐾")
 
 
 def normalize_time(value: str | time) -> str:
@@ -29,6 +55,28 @@ def normalize_time(value: str | time) -> str:
     except ValueError:
         raise ValueError(f"Invalid time {value!r}: use 24 hour HH:MM, like 08:30") from None
     return parsed.strftime("%H:%M")
+
+
+def _at(day: date, hhmm: str) -> datetime:
+    """Combine a date and an 'HH:MM' string into a datetime."""
+    return datetime.combine(day, datetime.strptime(normalize_time(hhmm), "%H:%M").time())
+
+
+def first_free_slot(
+    busy: list[tuple[datetime, datetime]],
+    duration: timedelta,
+    earliest: datetime,
+    latest: datetime,
+) -> datetime | None:
+    """Return the earliest start >= `earliest` where `duration` fits before `latest` without touching a busy window."""
+    cursor = earliest
+    for start, end in sorted(busy):
+        if end <= cursor:
+            continue  # this busy window is already behind us
+        if start - cursor >= duration:
+            break  # the gap before this window is big enough
+        cursor = end  # jump past the window and keep looking
+    return cursor if cursor + duration <= latest else None
 
 
 @dataclass
@@ -66,7 +114,7 @@ class Task:
     @property
     def start(self) -> datetime:
         """Return the task's start as a full datetime (due date + time)."""
-        return datetime.combine(self.due_date, datetime.strptime(self.time, "%H:%M").time())
+        return _at(self.due_date, self.time)
 
     @property
     def end(self) -> datetime:
@@ -92,6 +140,18 @@ class Task:
             completed=False,
             task_id=uuid4().hex[:8],
         )
+
+    def to_dict(self) -> dict:
+        """Serialize to a JSON friendly dict (dates become ISO strings)."""
+        data = asdict(self)
+        data["due_date"] = self.due_date.isoformat()
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Task:
+        """Rebuild a Task from to_dict() output, ignoring any unknown keys."""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -133,14 +193,43 @@ class Pet:
         """Return how many tasks this pet has."""
         return len(self.tasks)
 
+    def to_dict(self) -> dict:
+        """Serialize the pet and its tasks to a JSON friendly dict."""
+        return {
+            "name": self.name,
+            "species": self.species,
+            "breed": self.breed,
+            "tasks": [t.to_dict() for t in self.tasks],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Pet:
+        """Rebuild a Pet (and re-stamp its tasks) from to_dict() output."""
+        pet = cls(name=data["name"], species=data.get("species", "dog"), breed=data.get("breed", ""))
+        for task_data in data.get("tasks", []):
+            pet.add_task(Task.from_dict(task_data))
+        return pet
+
 
 @dataclass
 class Owner:
-    """The pet owner, who has one or more pets and a daily time budget."""
+    """The pet owner: their pets, daily time budget, and the hours they're available."""
 
     name: str
     available_minutes: int = 120
+    day_start: str = "07:00"
+    day_end: str = "21:00"
     pets: list[Pet] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Normalize the day window and make sure it makes sense."""
+        self.day_start = normalize_time(self.day_start)
+        self.day_end = normalize_time(self.day_end)
+        if self.day_start >= self.day_end:
+            raise ValueError("day_start must be earlier than day_end")
+        if int(self.available_minutes) < 0:
+            raise ValueError("available_minutes cannot be negative")
+        self.available_minutes = int(self.available_minutes)
 
     def add_pet(self, pet: Pet) -> Pet:
         """Add a pet; pet names must be unique for this owner."""
@@ -156,6 +245,82 @@ class Owner:
     def get_all_tasks(self) -> list[Task]:
         """Return every task across every pet."""
         return [task for pet in self.pets for task in pet.tasks]
+
+    def to_dict(self) -> dict:
+        """Serialize the owner, pets, and tasks to a JSON friendly dict."""
+        return {
+            "version": DATA_VERSION,
+            "name": self.name,
+            "available_minutes": self.available_minutes,
+            "day_start": self.day_start,
+            "day_end": self.day_end,
+            "pets": [p.to_dict() for p in self.pets],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Owner:
+        """Rebuild an Owner from to_dict() output."""
+        owner = cls(
+            name=data["name"],
+            available_minutes=data.get("available_minutes", 120),
+            day_start=data.get("day_start", "07:00"),
+            day_end=data.get("day_end", "21:00"),
+        )
+        for pet_data in data.get("pets", []):
+            owner.add_pet(Pet.from_dict(pet_data))
+        return owner
+
+    def save_to_json(self, path: str | Path = "data.json") -> Path:
+        """Write everything to a JSON file (via a temp file so a crash can't corrupt it)."""
+        path = Path(path)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        tmp.replace(path)
+        return path
+
+    @classmethod
+    def load_from_json(cls, path: str | Path = "data.json") -> Owner:
+        """Load an Owner previously written by save_to_json()."""
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+@dataclass
+class PlanEntry:
+    """One task placed in a DailyPlan, with its planned window and the reason it's there."""
+
+    task: Task
+    start: datetime
+    end: datetime
+    reason: str
+    moved: bool = False
+
+
+@dataclass
+class DailyPlan:
+    """What fits in the owner's day, in time order, plus what was skipped and why."""
+
+    day: date
+    budget_minutes: int
+    entries: list[PlanEntry] = field(default_factory=list)
+    skipped: list[tuple[Task, str]] = field(default_factory=list)
+
+    @property
+    def used_minutes(self) -> int:
+        """Total minutes of care in the plan."""
+        return sum(e.task.duration_minutes for e in self.entries)
+
+    def explain(self) -> str:
+        """Return a short summary of the plan and the reasoning behind it."""
+        lines = [
+            f"Planned {len(self.entries)} task(s) using {self.used_minutes} of "
+            f"{self.budget_minutes} available minutes. Highest priority tasks were placed first."
+        ]
+        moved = [e for e in self.entries if e.moved]
+        if moved:
+            lines.append(f"{len(moved)} task(s) were moved to a free slot to avoid overlaps.")
+        if self.skipped:
+            lines.append(f"{len(self.skipped)} task(s) didn't fit and were skipped.")
+        return " ".join(lines)
 
 
 class Scheduler:
@@ -181,6 +346,11 @@ class Scheduler:
         tasks = self.get_all_tasks() if tasks is None else tasks
         # Times are normalized to zero padded "HH:MM", so plain string order is clock order.
         return sorted(tasks, key=lambda t: (t.due_date, t.time))
+
+    def sort_by_priority(self, tasks: list[Task] | None = None) -> list[Task]:
+        """Return tasks highest priority first, breaking ties by date and then time."""
+        tasks = self.get_all_tasks() if tasks is None else tasks
+        return sorted(tasks, key=lambda t: (-PRIORITY_RANK[t.priority], t.due_date, t.time))
 
     def filter_tasks(
         self,
@@ -243,3 +413,63 @@ class Scheduler:
                     f"overlaps {b.pet_name}'s {b.description} ({b.time}, {b.duration_minutes} min)"
                 )
         return warnings
+
+    # ---- Stretch: next available slot ------------------------------------------
+
+    def find_next_available_slot(
+        self,
+        duration_minutes: int,
+        day: date | None = None,
+        earliest: str | time | None = None,
+    ) -> str | None:
+        """Return the first 'HH:MM' in the owner's day where a task of this length fits, or None."""
+        day = day or date.today()
+        window_start = _at(day, self.owner.day_start)
+        start = max(window_start, _at(day, normalize_time(earliest))) if earliest else window_start
+        busy = [(t.start, t.end) for t in self.filter_tasks(completed=False, day=day)]
+        slot = first_free_slot(busy, timedelta(minutes=duration_minutes), start, _at(day, self.owner.day_end))
+        return slot.strftime("%H:%M") if slot else None
+
+    # ---- Stretch: priority based daily plan with time blocking -------------------
+
+    def build_daily_plan(self, day: date | None = None) -> DailyPlan:
+        """Greedily fill the owner's time budget by priority, moving lower priority clashes to free slots."""
+        day = day or date.today()
+        budget = self.owner.available_minutes
+        plan = DailyPlan(day=day, budget_minutes=budget)
+        day_end = _at(day, self.owner.day_end)
+
+        for task in self.sort_by_priority(self.filter_tasks(completed=False, day=day)):
+            remaining = budget - plan.used_minutes
+            if task.duration_minutes > remaining:
+                plan.skipped.append(
+                    (task, f"needs {task.duration_minutes} min but only {remaining} of {budget} min left")
+                )
+                continue
+
+            clash = next((e for e in plan.entries if e.start < task.end and task.start < e.end), None)
+            if clash is None:
+                plan.entries.append(
+                    PlanEntry(task, task.start, task.end, f"{task.priority} priority, at the requested time")
+                )
+                continue
+
+            busy = [(e.start, e.end) for e in plan.entries]
+            duration = timedelta(minutes=task.duration_minutes)
+            slot = first_free_slot(busy, duration, task.start, day_end)
+            blocker = f"{clash.task.pet_name}'s {clash.task.description}"
+            if slot is None:
+                plan.skipped.append((task, f"overlaps {blocker} and no later slot is free before {self.owner.day_end}"))
+                continue
+            plan.entries.append(
+                PlanEntry(
+                    task,
+                    slot,
+                    slot + duration,
+                    f"{task.priority} priority, moved from {task.time} to {slot:%H:%M} to avoid {blocker}",
+                    moved=True,
+                )
+            )
+
+        plan.entries.sort(key=lambda e: e.start)
+        return plan
